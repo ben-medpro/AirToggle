@@ -7,7 +7,8 @@ REPO="ben-medpro/AirToggle"
 DEST="/Applications/AirToggle.app"
 
 echo "Looking up the latest AirToggle release…"
-URL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+# /releases (not /releases/latest) so beta prereleases are included; newest first.
+URL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=5" \
       | grep -o '"browser_download_url": *"[^"]*\.zip"' | head -1 | sed 's/.*"\(http[^"]*\)"/\1/')
 if [[ -z "$URL" ]]; then echo "Could not find a release download. Visit https://github.com/$REPO/releases"; exit 1; fi
 
