@@ -595,11 +595,12 @@ struct Shortcut: Equatable {
 
     static func keyLabel(for keyCode: UInt32) -> String {
         if let name = specialKeyNames[keyCode] { return name }
-        labelLock.lock()
-        let cached = labelCache[keyCode]
-        labelLock.unlock()
-        if let cached { return cached }
-        guard Thread.isMainThread else { return fallbackLabels[keyCode] ?? "Key \(keyCode)" }
+        guard Thread.isMainThread else {
+            // Background readers never touch Carbon; they get the last main-thread result.
+            labelLock.lock(); defer { labelLock.unlock() }
+            return labelCache[keyCode] ?? fallbackLabels[keyCode] ?? "Key \(keyCode)"
+        }
+        // Main-thread reads recompute so a keyboard layout change shows up immediately.
         let label = computeKeyLabelOnMainThread(keyCode) ?? fallbackLabels[keyCode] ?? "Key \(keyCode)"
         labelLock.lock()
         labelCache[keyCode] = label
