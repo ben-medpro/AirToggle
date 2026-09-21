@@ -1,0 +1,7 @@
+build/
+dist/
+*.icns
+.DS_Store
+# copies of system files used while debugging
+com.apple.*.plist
+menubar-copy.plist
