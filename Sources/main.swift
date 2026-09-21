@@ -576,11 +576,44 @@ struct Shortcut: Equatable {
         String(utf16CodeUnits: [unichar(code)], count: 1)
     }
 
-    var keyLabel: String {
-        if let name = Shortcut.specialKeyNames[keyCode] { return name }
+    var keyLabel: String { Shortcut.keyLabel(for: keyCode) }
+
+    // The Carbon text-input APIs used to name a key must run on the main thread (macOS asserts
+    // otherwise). AppKit can rebuild our menu on a background thread when an accessibility client
+    // inspects it, so labels are computed on the main thread once and served from a cache after that.
+    private static var labelCache: [UInt32: String] = [:]
+    private static let labelLock = NSLock()
+
+    /// US-layout names used only if a label is requested off the main thread before it was cached.
+    private static let fallbackLabels: [UInt32: String] = [
+        0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X", 8: "C", 9: "V", 11: "B", 12: "Q",
+        13: "W", 14: "E", 15: "R", 16: "Y", 17: "T", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5",
+        24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0", 30: "]", 31: "O", 32: "U", 33: "[", 34: "I",
+        35: "P", 37: "L", 38: "J", 39: "'", 40: "K", 41: ";", 42: "\\", 43: ",", 44: "/", 45: "N", 46: "M",
+        47: ".", 50: "`",
+    ]
+
+    static func keyLabel(for keyCode: UInt32) -> String {
+        if let name = specialKeyNames[keyCode] { return name }
+        labelLock.lock()
+        let cached = labelCache[keyCode]
+        labelLock.unlock()
+        if let cached { return cached }
+        guard Thread.isMainThread else { return fallbackLabels[keyCode] ?? "Key \(keyCode)" }
+        let label = computeKeyLabelOnMainThread(keyCode) ?? fallbackLabels[keyCode] ?? "Key \(keyCode)"
+        labelLock.lock()
+        labelCache[keyCode] = label
+        labelLock.unlock()
+        return label
+    }
+
+    /// Warm the cache for a shortcut (call on the main thread).
+    static func primeLabel(for shortcut: Shortcut) { _ = keyLabel(for: shortcut.keyCode) }
+
+    private static func computeKeyLabelOnMainThread(_ keyCode: UInt32) -> String? {
         guard let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
               let layoutPointer = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
-        else { return "Key \(keyCode)" }
+        else { return nil }
         let layoutData = unsafeBitCast(layoutPointer, to: CFData.self)
         let layout = unsafeBitCast(CFDataGetBytePtr(layoutData), to: UnsafePointer<UCKeyboardLayout>.self)
         var deadKeyState: UInt32 = 0
@@ -589,7 +622,7 @@ struct Shortcut: Equatable {
         let status = UCKeyTranslate(layout, UInt16(keyCode), UInt16(kUCKeyActionDisplay), 0,
                                     UInt32(LMGetKbdType()), UInt32(kUCKeyTranslateNoDeadKeysMask),
                                     &deadKeyState, chars.count, &length, &chars)
-        guard status == noErr, length > 0 else { return "Key \(keyCode)" }
+        guard status == noErr, length > 0 else { return nil }
         return String(utf16CodeUnits: chars, count: length).uppercased()
     }
 }
@@ -1159,6 +1192,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusItem.menu = menu
 
+        Shortcut.primeLabel(for: shortcut)
+        Shortcut.primeLabel(for: .default)
         HotKeyManager.shared.onPress = { [weak self] in self?.toggle() }
         HotKeyManager.shared.register(shortcut)
 
@@ -1291,6 +1326,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateStatusButton() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.updateStatusButton() }
+            return
+        }
         let trusted = ControlCenterEngine.isTrusted
         statusItem.button?.appearsDisabled = !trusted
         statusItem.button?.toolTip = trusted
@@ -1426,6 +1465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let newShortcut {
                 self.shortcut = newShortcut
                 newShortcut.save()
+                Shortcut.primeLabel(for: newShortcut)
             }
             if !HotKeyManager.shared.register(self.shortcut) {
                 HUD.shared.show(symbol: "exclamationmark.triangle", text: "Shortcut unavailable")
